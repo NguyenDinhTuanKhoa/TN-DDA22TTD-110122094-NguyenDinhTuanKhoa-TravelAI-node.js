@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { saveNavPayload } from '../lib/navHandoff';
 import {
   type Tour,
   isTourSaved,
@@ -67,8 +69,25 @@ export function Stars({ rating, size = 'sm' }: { rating: number; size?: 'sm' | '
 
 // ── Tour Detail Modal ─────────────────────────────────────────────────────────
 export default function TourDetailModal({ tour, onClose }: { tour: Tour; onClose: () => void }) {
-  const [activeTab, setActiveTab] = useState<'map' | 'stops' | 'reviews'>('map');
+  const [activeTab, setActiveTab] = useState<'map' | 'nav' | 'stops' | 'reviews'>('map');
   const saved = useTourSaved(tour.id);
+  const router = useRouter();
+
+  // Tour ≥ 2 trạm: bấm tab "Dẫn đường" mở thẳng trang dẫn đường riêng (/navigate);
+  // < 2 trạm: chuyển sang tab 'nav' để hiện cảnh báo.
+  const startNavigation = () => {
+    if (tour.stops.length < 2) { setActiveTab('nav'); return; }
+    saveNavPayload({
+      title: tour.title,
+      waypoints: tour.stops.map((s) => ({
+        name: s.name,
+        city: s.city,
+        lat: s.coordinates?.lat,
+        lng: s.coordinates?.lng,
+      })),
+    });
+    router.push('/navigate');
+  };
   // Bản đồ địa lý dùng chiều cao cố định (khác list dọc cũ cần cao theo số trạm).
   const mapHeight = 460;
 
@@ -144,12 +163,13 @@ export default function TourDetailModal({ tour, onClose }: { tour: Tour; onClose
         <div className="flex border-b border-gray-100 flex-shrink-0 px-2">
           {([
             { id: 'map', label: '🎮 Bản đồ', count: null },
+            { id: 'nav', label: '🧭 Dẫn đường', count: null },
             { id: 'stops', label: '📍 Trạm dừng', count: tour.stops.length },
             { id: 'reviews', label: '💬 Đánh giá', count: tour.reviewCount },
           ] as const).map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => (tab.id === 'nav' ? startNavigation() : setActiveTab(tab.id))}
               className={`flex items-center gap-1.5 px-5 py-3 text-sm font-semibold border-b-2 transition-all ${
                 activeTab === tab.id
                   ? 'border-sky-500 text-sky-600'
@@ -191,6 +211,13 @@ export default function TourDetailModal({ tour, onClose }: { tour: Tour; onClose
                   <TourMap stops={tour.stops} height={mapHeight} />
                 </div>
               )}
+            </div>
+          )}
+
+          {/* NAVIGATION TAB — chỉ hiện khi tour < 2 trạm (≥ 2 trạm mở thẳng trang /navigate) */}
+          {activeTab === 'nav' && (
+            <div className="p-5">
+              <p className="text-center text-sm text-gray-400 py-8">Tour này cần ít nhất 2 trạm để dẫn đường.</p>
             </div>
           )}
 

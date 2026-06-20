@@ -10,6 +10,7 @@ import Footer from '../../components/Footer';
 import { useAuth } from '../../context/AuthContext';
 import ShareItineraryModal from '../../components/chat/ShareItineraryModal';
 import dynamic from 'next/dynamic';
+import { saveNavPayload } from '../../lib/navHandoff';
 
 const ItineraryMap = dynamic(() => import('../../components/ItineraryMap'), { ssr: false });
 
@@ -52,7 +53,7 @@ const categoryIcons: Record<string, string> = {
   heritage: '🏛️', nature: '🌿', island: '🏝️', default: '📍'
 };
 
-// ── Shared helpers (dùng cho cả LiveMapPanel và Danh sách trạm dừng) ──
+// ── Shared helpers (sắp xếp lộ trình + Danh sách trạm dừng) ──
 const haversine = (lat1: number, lng1: number, lat2: number, lng2: number) => {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -147,267 +148,6 @@ function DescriptionPanel({ description }: { description: string }) {
   );
 }
 
-
-// ── Component: Live Map Navigation Panel ──
-function LiveMapPanel({ dests, itinerary }: { dests: ItineraryDestination[], itinerary: Itinerary }) {
-
-  // Nearest Neighbor Algorithm — dùng shared helper
-  const sortedDests = (() => {
-    const stops = dests.map(d => d.destination).filter(Boolean) as Destination[];
-    return nearestNeighborSort(stops);
-  })();
-
-  // Google Maps web hỗ trợ tối đa ~10 điểm trong URL chỉ đường
-  const GOOGLE_MAPS_MAX_STOPS = 10;
-
-  // Build Google Maps URL với thứ tự đã tối ưu
-  const buildGoogleMapsUrl = (stopsToUse?: Destination[]) => {
-    const stops = stopsToUse || sortedDests;
-    if (stops.length === 0) return 'https://maps.google.com';
-
-    // Lọc chỉ lấy điểm có coordinates hợp lệ
-    const validStops = stops.filter(d => 
-      d?.location?.coordinates?.lat != null && 
-      d?.location?.coordinates?.lng != null &&
-      !isNaN(d.location.coordinates.lat) &&
-      !isNaN(d.location.coordinates.lng)
-    );
-
-    // Nếu không có điểm hợp lệ, fallback về search
-    if (validStops.length === 0) {
-      const firstStop = stops[0];
-      const query = encodeURIComponent(`${firstStop?.name || ''} ${firstStop?.location?.city || ''} Vietnam`.trim());
-      return `https://www.google.com/maps/search/?api=1&query=${query}`;
-    }
-
-    // Nếu chỉ 1 điểm
-    if (validStops.length === 1) {
-      const d = validStops[0];
-      return `https://www.google.com/maps/search/?api=1&query=${d.location.coordinates!.lat},${d.location.coordinates!.lng}`;
-    }
-
-    // Nếu quá 10 điểm → sample đều (giữ điểm đầu + cuối, chọn đều ở giữa)
-    let selectedStops = validStops;
-    if (validStops.length > GOOGLE_MAPS_MAX_STOPS) {
-      selectedStops = [validStops[0]]; // always keep first
-      const step = (validStops.length - 1) / (GOOGLE_MAPS_MAX_STOPS - 1);
-      for (let i = 1; i < GOOGLE_MAPS_MAX_STOPS - 1; i++) {
-        selectedStops.push(validStops[Math.round(i * step)]);
-      }
-      selectedStops.push(validStops[validStops.length - 1]); // always keep last
-    }
-
-    // ✅ FIX: Dùng format origin/destination/waypoints thay vì dir/
-    const origin = `${selectedStops[0].location.coordinates!.lat},${selectedStops[0].location.coordinates!.lng}`;
-    const destination = `${selectedStops[selectedStops.length - 1].location.coordinates!.lat},${selectedStops[selectedStops.length - 1].location.coordinates!.lng}`;
-    
-    // Waypoints là các điểm ở giữa (nếu có)
-    const waypoints = selectedStops.slice(1, -1).map(d => 
-      `${d.location.coordinates!.lat},${d.location.coordinates!.lng}`
-    );
-
-    // Build URL với format chuẩn Google Maps Directions API
-    let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
-    
-    if (waypoints.length > 0) {
-      url += `&waypoints=${waypoints.join('|')}`;
-    }
-    
-    console.log('🗺️ Google Maps URL:', url); // DEBUG
-    console.log('📍 Origin:', origin);
-    console.log('🏁 Destination:', destination);
-    console.log('🚩 Waypoints:', waypoints);
-    
-    return url;
-  };
-
-  // Chia nhỏ thành các chặng 5-6 điểm để xem từng phần
-  const buildSegmentUrls = (): { label: string; url: string }[] => {
-    if (sortedDests.length <= GOOGLE_MAPS_MAX_STOPS) return [];
-    const segmentSize = 6; // 6 điểm/chặng, overlap 1 điểm
-    const segments: { label: string; url: string }[] = [];
-    for (let i = 0; i < sortedDests.length; i += segmentSize - 1) {
-      const chunk = sortedDests.slice(i, Math.min(i + segmentSize, sortedDests.length));
-      if (chunk.length < 2) break;
-      const from = chunk[0].name || `Trạm ${i + 1}`;
-      const to = chunk[chunk.length - 1].name || `Trạm ${i + chunk.length}`;
-      segments.push({
-        label: `${from} → ${to}`,
-        url: buildGoogleMapsUrl(chunk)
-      });
-    }
-    return segments;
-  };
-
-  const segmentUrls = buildSegmentUrls();
-  const isTruncated = sortedDests.length > GOOGLE_MAPS_MAX_STOPS;
-
-  // Estimate travel time (~30 mins per stop average)
-  const estimatedHours = Math.round(dests.length * 0.5 * 10) / 10;
-
-
-  return (
-    <div className="space-y-4">
-      {/* Header card */}
-      <div className="bg-gradient-to-r from-blue-600 to-sky-500 rounded-3xl p-5 text-white shadow-xl shadow-blue-500/20">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <p className="text-blue-100 text-xs font-semibold uppercase tracking-wider mb-1">🗺️ Lộ trình thực tế</p>
-            <h3 className="text-xl font-black">{itinerary.title}</h3>
-          </div>
-          <div className="bg-white/20 rounded-2xl px-3 py-2 text-center backdrop-blur-sm">
-            <p className="text-2xl font-black">{dests.length}</p>
-            <p className="text-blue-100 text-xs">trạm</p>
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 gap-3 mb-5">
-          <div className="bg-white/15 rounded-2xl px-4 py-3 backdrop-blur-sm">
-            <p className="text-blue-100 text-xs mb-0.5">⏱️ Ước tính di chuyển</p>
-            <p className="font-bold text-sm">~{estimatedHours}h (không dừng)</p>
-          </div>
-          <div className="bg-white/15 rounded-2xl px-4 py-3 backdrop-blur-sm">
-            <p className="text-blue-100 text-xs mb-0.5">🚗 Phương tiện</p>
-            <p className="font-bold text-sm">Xe máy / Ô tô</p>
-          </div>
-        </div>
-
-        {/* Big CTA Button */}
-        <a
-          href={buildGoogleMapsUrl()}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center gap-3 w-full py-4 bg-white rounded-2xl text-blue-600 font-black text-base hover:scale-[1.02] transition-transform shadow-lg active:scale-100"
-        >
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="#4285F4"/>
-            <path d="M12 11.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="white"/>
-          </svg>
-          Mở Google Maps — Dẫn đường ngay!
-        </a>
-        <p className="text-center text-blue-100 text-xs mt-2">
-          {isTruncated
-            ? `Hiển thị ${GOOGLE_MAPS_MAX_STOPS}/${dests.length} trạm chính trên bản đồ`
-            : `Tự động điền ${dests.length} trạm dừng trên lộ trình`}
-        </p>
-
-        {/* Segment links — khi có quá nhiều trạm */}
-        {segmentUrls.length > 0 && (
-          <div className="mt-4 space-y-2">
-            <p className="text-blue-100 text-xs font-semibold">📋 Xem từng chặng (đầy đủ {dests.length} trạm):</p>
-            <div className="grid gap-2">
-              {segmentUrls.map((seg, i) => (
-                <a
-                  key={i}
-                  href={seg.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 px-4 py-2.5 bg-white/15 hover:bg-white/25 rounded-xl text-sm transition-all border border-white/10"
-                >
-                  <span className="bg-white/30 rounded-lg w-7 h-7 flex items-center justify-center text-xs font-black shrink-0">
-                    {i + 1}
-                  </span>
-                  <span className="truncate">{seg.label}</span>
-                  <span className="ml-auto text-blue-200 text-xs shrink-0">→ Maps</span>
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Route steps */}
-      <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h4 className="font-bold text-gray-800 flex items-center gap-2">📍 Thứ tự lộ trình tối ưu</h4>
-          <span className="text-xs bg-green-100 text-green-700 font-semibold px-2.5 py-1 rounded-xl">✓ Đã tối ưu gần nhất</span>
-        </div>
-        <div className="divide-y divide-gray-50">
-          {sortedDests.map((dest, idx) => {
-            const isFirst = idx === 0;
-            const isLast = idx === sortedDests.length - 1;
-
-            // Tính khoảng cách đến trạm kế tiếp
-            const nextDest = sortedDests[idx + 1];
-            const distToNext = (() => {
-              if (!nextDest || !dest?.location?.coordinates?.lat || !nextDest?.location?.coordinates?.lat) return null;
-              const d = haversine(
-                dest.location.coordinates!.lat!, dest.location.coordinates!.lng!,
-                nextDest.location.coordinates!.lat!, nextDest.location.coordinates!.lng!
-              );
-              return d < 1 ? `${Math.round(d * 1000)}m` : `${d.toFixed(1)}km`;
-            })();
-
-            const stopUrl = (() => {
-              if (dest?.location?.coordinates?.lat && dest?.location?.coordinates?.lng) {
-                return `https://www.google.com/maps/search/?api=1&query=${dest.location.coordinates.lat},${dest.location.coordinates.lng}`;
-              }
-              const query = encodeURIComponent(`${dest?.name || ''} ${dest?.location?.city || ''} Vietnam`.trim());
-              return `https://www.google.com/maps/search/?api=1&query=${query}`;
-            })();
-
-            return (
-              <div key={idx}>
-                <div className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50 transition-colors group">
-                  {/* Step indicator */}
-                  <div className="flex flex-col items-center shrink-0">
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center font-black text-sm shadow-md ${
-                      isFirst ? 'bg-green-400 text-white' :
-                      isLast  ? 'bg-red-400 text-white' :
-                      'bg-gradient-to-br from-sky-400 to-blue-600 text-white'
-                    }`}>
-                      {isFirst ? '🚀' : isLast ? '🏁' : idx + 1}
-                    </div>
-                  </div>
-
-                  {/* Destination info */}
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900 truncate">{dest?.name}</p>
-                    <p className="text-xs text-gray-400 truncate">
-                      {isFirst ? '🟢 Điểm xuất phát' : isLast ? '🔴 Điểm kết thúc' : `Trạm dừng ${idx + 1}`}
-                      {dest?.location?.city && ` · ${dest.location.city}`}
-                    </p>
-                  </div>
-
-                  {/* Pin button */}
-                  <a
-                    href={stopUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="shrink-0 px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-600 text-xs font-semibold rounded-xl transition-all opacity-0 group-hover:opacity-100"
-                  >
-                    Xem 📍
-                  </a>
-                </div>
-
-                {/* Distance connector to next stop */}
-                {!isLast && distToNext && (
-                  <div className="flex items-center gap-3 pl-[2.75rem] pr-5 py-1">
-                    <div className="w-0.5 h-4 bg-gray-200 mx-4 shrink-0" />
-                    <span className="text-xs text-gray-400 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-0.5 font-medium">
-                      ↓ {distToNext}
-                    </span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-        </div>
-      </div>
-
-      {/* Tip */}
-      <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
-        <span className="text-xl shrink-0">💡</span>
-        <p className="text-amber-800 text-xs leading-relaxed">
-          <strong>Mẹo:</strong> Bấm nút xanh để mở app Google Maps trên điện thoại, sau đó bấm <strong>"Bắt đầu"</strong> để nghe hướng dẫn giọng nói. Kéo thả trạm để thay đổi thứ tự nếu muốn!
-        </p>
-      </div>
-    </div>
-  );
-}
-
 export default function ItineraryDetailPage() {
   return (
     <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><div className="animate-spin w-12 h-12 border-4 border-sky-500 border-t-transparent rounded-full" /></div>}>
@@ -427,7 +167,6 @@ function ItineraryDetailContent() {
   const [activeNode, setActiveNode] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [editData, setEditData] = useState({ title: '', description: '', status: '' });
-  const [mapView, setMapView] = useState<'game' | 'live'>('game');
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [optimizeMsg, setOptimizeMsg] = useState<string | null>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -992,41 +731,33 @@ function ItineraryDetailContent() {
               {/* ── LEFT: Game Map / Live Map (40% width) ── */}
               <div className="lg:w-[40%]">
                 <div className="lg:sticky lg:top-24">
-                  {/* ── VIEW TOGGLE BAR ── */}
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="flex bg-gray-100 rounded-2xl p-1 gap-1 flex-1">
-                      <button
-                        onClick={() => setMapView('game')}
-                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 ${
-                          mapView === 'game'
-                            ? 'bg-white shadow-md text-gray-800'
-                            : 'text-gray-500 hover:text-gray-700'
-                        }`}
-                      >
-                        🎮 <span className="hidden sm:inline">Bản đồ tổng quan</span><span className="sm:hidden">Tổng quan</span>
-                      </button>
-                      <button
-                        onClick={() => setMapView('live')}
-                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 ${
-                          mapView === 'live'
-                            ? 'bg-gradient-to-r from-sky-500 to-blue-600 shadow-md text-white'
-                            : 'text-gray-500 hover:text-gray-700'
-                        }`}
-                      >
-                        🗺️ <span className="hidden sm:inline">Dẫn đường thực tế</span><span className="sm:hidden">Dẫn đường</span>
-                      </button>
-                    </div>
-                  </div>
-
-                {mapView === 'live' ? (
-                  /* ── LIVE NAVIGATION PANEL ── */
-                  <LiveMapPanel dests={dests} itinerary={itinerary} />
-                ) : (
                 <div>
-                <h2 className="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2">
-                  🗺️ <span>Bản đồ hành trình</span>
-                </h2>
-                <p className="text-xs text-gray-500 mb-3">Click vào điểm để xem chi tiết</p>
+                {/* ── Header: tiêu đề + nút mở trang dẫn đường riêng ── */}
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                      🗺️ <span>Bản đồ hành trình</span>
+                    </h2>
+                    <p className="text-xs text-gray-500 mt-1">Click vào điểm để xem chi tiết</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      saveNavPayload({
+                        title: itinerary.title,
+                        waypoints: displayDests.map((d) => ({
+                          name: d.destination?.name ?? '',
+                          city: d.destination?.location?.city,
+                          lat: d.destination?.location?.coordinates?.lat,
+                          lng: d.destination?.location?.coordinates?.lng,
+                        })),
+                      });
+                      router.push('/navigate');
+                    }}
+                    className="shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md hover:shadow-lg hover:scale-[1.02] transition-all active:scale-100"
+                  >
+                    🧭 <span className="hidden sm:inline">Dẫn đường thực tế</span><span className="sm:hidden">Dẫn đường</span>
+                  </button>
+                </div>
 
                 <div className="rounded-2xl overflow-hidden shadow-xl border border-gray-100">
                   <ItineraryMap
@@ -1049,7 +780,6 @@ function ItineraryDetailContent() {
                   </div>
                 )}
                 </div>
-                )}
                 </div>
               </div>
 
