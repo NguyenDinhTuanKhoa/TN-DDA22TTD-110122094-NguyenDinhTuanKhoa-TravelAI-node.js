@@ -9,7 +9,6 @@ const LABELS: Record<string, string> = {
   itineraries: 'Lịch trình',
   users: 'Người dùng',
   chats: 'Chat history',
-  activity: 'Activity log',
 };
 
 function label(segment: string) {

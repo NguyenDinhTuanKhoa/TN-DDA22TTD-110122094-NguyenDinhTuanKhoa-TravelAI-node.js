@@ -24,7 +24,6 @@ const menuItems: MenuItem[] = [
   { name: 'Lịch trình', href: '/admin/itineraries', icon: '🗺️', section: 'Nội dung' },
   { name: 'Người dùng', href: '/admin/users', icon: '👥', section: 'Quản lý' },
   { name: 'Chat history', href: '/admin/chats', icon: '💬', section: 'Quản lý' },
-  { name: 'Activity log', href: '/admin/activity', icon: '📜', section: 'Hệ thống' },
 ];
 
 function getIcon(name: string, active: boolean) {
@@ -65,12 +64,6 @@ function getIcon(name: string, active: boolean) {
       return (
         <svg className={`w-5 h-5 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a.75.75 0 0 1-1.074-.765 7.99 7.99 0 0 0 1.257-3.241C4.343 15.65 3 13.98 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
-        </svg>
-      );
-    case 'Activity log':
-      return (
-        <svg className={`w-5 h-5 ${colorClass}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
         </svg>
       );
     default:

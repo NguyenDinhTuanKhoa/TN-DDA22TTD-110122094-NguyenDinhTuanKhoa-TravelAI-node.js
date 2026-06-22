@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import useSWR from 'swr';
 import { adminApi } from '../../lib/adminApi';
 
@@ -154,14 +153,6 @@ export default function NotificationBell() {
               </ul>
             )}
           </div>
-
-          <Link
-            href="/admin/activity"
-            onClick={() => setOpen(false)}
-            className="block px-4 py-2.5 text-center text-xs font-semibold text-violet-600 hover:bg-violet-50 border-t border-gray-100 transition-colors"
-          >
-            Xem tất cả nhật ký →
-          </Link>
         </div>
       )}
     </div>

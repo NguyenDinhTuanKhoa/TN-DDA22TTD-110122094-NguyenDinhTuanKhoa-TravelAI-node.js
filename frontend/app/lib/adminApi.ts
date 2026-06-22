@@ -101,8 +101,4 @@ export const adminApi = {
     fetchAdmin(`/chats/${id}`, { method: 'DELETE' }),
   bulkDeleteChats: (ids: string[]) =>
     fetchAdmin('/chats/bulk', { method: 'DELETE', body: JSON.stringify({ ids }) }),
-
-  // ===== Activity Log =====
-  getActivity: (params: { page?: number; action?: string; adminId?: string; dateFrom?: string; dateTo?: string } = {}) =>
-    fetchAdmin(`/activity${qs(params)}`),
 };

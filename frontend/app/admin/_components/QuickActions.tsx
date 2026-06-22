@@ -13,7 +13,6 @@ const ACTIONS: Action[] = [
   { href: '/admin/destinations', icon: '🏝️', label: 'Quản lý điểm đến', hint: 'Thêm, sửa, xóa', accent: 'emerald' },
   { href: '/admin/users', icon: '👥', label: 'Quản lý người dùng', hint: 'Phân quyền, ban', accent: 'sky' },
   { href: '/admin/reviews', icon: '⭐', label: 'Kiểm duyệt đánh giá', hint: 'Xem các review mới', accent: 'orange' },
-  { href: '/admin/activity', icon: '📜', label: 'Nhật ký hệ thống', hint: 'Xem activity log', accent: 'violet' },
 ];
 
 const accentClass: Record<Action['accent'], string> = {
