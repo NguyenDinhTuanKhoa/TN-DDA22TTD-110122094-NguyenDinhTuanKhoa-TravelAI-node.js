@@ -276,13 +276,15 @@ export default function AIChatPage() {
 
   // ── Fetch destinations mention trong AI response ────────────────────────────
   // Backend trích địa danh (khớp không dấu/hoa thường + lõi tên + lọc đúng tỉnh ngữ cảnh)
-  const fetchMentionedDestinations = useCallback(async (messageId: string, text: string) => {
+  const fetchMentionedDestinations = useCallback(async (messageId: string, text: string, question = '') => {
     if (!API_URL || !text) return;
     try {
       const res = await fetch(`${API_URL}/destinations/from-text`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        // Gửi kèm câu hỏi để backend bỏ qua card khi người dùng hỏi ngoài lề
+        // (kiến thức chung / hành chính), tránh hiện điểm đến sai ngữ cảnh.
+        body: JSON.stringify({ text, question }),
       });
       const d = await res.json();
       if (d.success && d.data?.length > 0) {
@@ -519,7 +521,10 @@ export default function AIChatPage() {
           if (cards.length > 0) {
             persisted[msg.id] = cards as DestinationMini[];
           } else if (!Array.isArray(raw) || raw.length === 0) {
-            fetchMentionedDestinations(msg.id, msg.content); // legacy: chưa có field destinations
+            // legacy: chưa có field destinations → trích lại, kèm câu hỏi user liền trước
+            // để bỏ qua card khi đó là câu hỏi ngoài lề.
+            const prevUserQ = rawMsgs[idx - 1]?.role === 'user' ? rawMsgs[idx - 1].content : '';
+            fetchMentionedDestinations(msg.id, msg.content, prevUserQ);
           }
         });
         if (Object.keys(persisted).length > 0) setMsgDestinations(persisted);
@@ -723,7 +728,7 @@ export default function AIChatPage() {
       ));
       // Form làm rõ KHÔNG phải gợi ý điểm đến → không trích card (kẻo lời mở đầu kiểu
       // "gợi ý bãi biển hợp ý" khớp nhầm địa danh tên "Bãi biển").
-      if (!clarifyForm) fetchMentionedDestinations(aiMsgId, finalContent);
+      if (!clarifyForm) fetchMentionedDestinations(aiMsgId, finalContent, content);
       if (isAuthed) loadChatHistories();
 
     } catch (error: any) {

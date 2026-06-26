@@ -1,5 +1,6 @@
 // Lưu tour cộng đồng (/my-tours) vào localStorage.
 // Các tour này là dữ liệu hardcode (không có trong DB) nên không dùng được API /saved.
+import { clearProgress } from './tourProgress';
 
 export interface TourStop {
   name: string;
@@ -14,6 +15,7 @@ export interface TourStop {
 }
 
 export interface TourReview {
+  userId?: string;   // có khi review do người dùng đăng (nhận diện "của tôi")
   name: string;
   avatar: string;
   date: string;
@@ -113,11 +115,13 @@ export function toggleSavedTour(tour: Tour): boolean {
     return true;
   }
   persist(tours.filter((t) => t.id !== tour.id));
+  clearProgress(tour.id);   // bỏ lưu → dọn luôn trạng thái vòng đời
   return false;
 }
 
 export function removeSavedTour(id: string) {
   persist(getSavedTours().filter((t) => t.id !== id));
+  clearProgress(id);
 }
 
 export const SAVED_TOURS_EVENT = EVENT;

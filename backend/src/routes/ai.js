@@ -241,7 +241,10 @@ router.post('/chat/stream', optionalAuth, streamLimiter, async (req, res) => {
         let destIds = [];
         if (!cleanResponse.includes('```json_form')) {
           try {
-            const dests = await aiService.extractMentionedDestinations(cleanResponse);
+            // Kèm câu hỏi user để bỏ qua card khi đó là câu hỏi ngoài lề (kiến thức
+            // chung / hành chính) — đồng bộ với gate ở /destinations/from-text.
+            const userQ = lastMsg?.role === 'user' ? lastMsg.content : '';
+            const dests = await aiService.extractMentionedDestinations(cleanResponse, 10, userQ);
             destIds = dests.map(d => d._id);
           } catch (e) {
             console.warn('[Stream] extract destinations failed:', e.message);

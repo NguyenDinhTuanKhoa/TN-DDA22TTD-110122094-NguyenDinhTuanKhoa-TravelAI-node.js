@@ -7,6 +7,7 @@ import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 import { useAuth } from '../context/AuthContext';
 import { getSavedTours, removeSavedTour, SAVED_TOURS_EVENT, type SavedTour } from '../lib/savedTours';
+import { useTourStatus, setTourStatus } from '../lib/tourProgress';
 import TourDetailModal from '../components/TourDetailModal';
 
 interface Destination {
@@ -36,6 +37,93 @@ const categoryLabels: Record<string, string> = {
   historical: '🏛️ Di tích',
 };
 
+// Card tour đã lưu kèm vòng đời (badge trạng thái + nút hành động). Tách riêng
+// để gọi hook useTourStatus cho từng tour (không gọi hook trong .map của cha).
+function SavedTourCard({
+  tour,
+  onOpen,
+  onRemove,
+}: {
+  tour: SavedTour;
+  onOpen: (tab: 'map' | 'reviews') => void;
+  onRemove: () => void;
+}) {
+  const status = useTourStatus(tour.id);
+  return (
+    <div className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all group">
+      <button onClick={() => onOpen('map')} className="block w-full text-left">
+        <div className="relative h-48">
+          <Image
+            src={tour.coverImage || 'https://via.placeholder.com/400'}
+            alt={tour.title}
+            fill
+            className="object-cover group-hover:scale-105 transition-transform"
+          />
+          <span className="absolute top-3 left-3 px-2 py-1 bg-white/90 backdrop-blur-sm rounded-full text-xs font-medium">
+            ⭐ {tour.rating?.toFixed(1)}
+          </span>
+          {status !== 'saved' && (
+            <span
+              className={`absolute top-3 right-3 px-2 py-1 rounded-full text-xs font-bold backdrop-blur-sm ${
+                status === 'completed' ? 'bg-emerald-500/90 text-white' : 'bg-amber-400/95 text-white'
+              }`}
+            >
+              {status === 'completed' ? '✓ Đã đi' : '🚶 Đang đi'}
+            </span>
+          )}
+          <span className="absolute bottom-3 right-3 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/55 group-hover:bg-black/75 backdrop-blur text-white text-xs font-semibold transition-all">
+            👁️ Xem chi tiết
+          </span>
+        </div>
+      </button>
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-2">
+          <button onClick={() => onOpen('map')} className="flex-1 min-w-0 text-left">
+            <h3 className="font-semibold text-gray-900 line-clamp-2 hover:text-sky-600 transition-colors">
+              <span className="mr-1">{tour.categoryIcon}</span>{tour.title}
+            </h3>
+            <p className="text-sm text-gray-500 mt-1">📍 {tour.region} · ⏱️ {tour.duration}</p>
+            <p className="text-orange-600 font-bold mt-1">{tour.priceLabel}</p>
+          </button>
+          <button
+            onClick={onRemove}
+            className="p-2 text-red-500 hover:bg-red-50 rounded-full transition-all flex-shrink-0"
+            title="Bỏ lưu"
+          >
+            ❤️
+          </button>
+        </div>
+
+        {/* Hành động theo vòng đời */}
+        <div className="mt-3">
+          {status === 'completed' ? (
+            <button
+              onClick={() => onOpen('reviews')}
+              className="w-full py-2.5 rounded-xl bg-amber-100 text-amber-700 font-bold text-sm hover:bg-amber-200 transition-all"
+            >
+              ⭐ Đánh giá
+            </button>
+          ) : status === 'going' ? (
+            <button
+              onClick={() => { setTourStatus(tour.id, 'completed'); onOpen('reviews'); }}
+              className="w-full py-2.5 rounded-xl bg-emerald-500 text-white font-bold text-sm hover:bg-emerald-600 transition-all"
+            >
+              Đã đi xong
+            </button>
+          ) : (
+            <button
+              onClick={() => onOpen('map')}
+              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-sky-500 text-white font-bold text-sm hover:shadow-md transition-all"
+            >
+              ▶ Bắt đầu đi
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SavedPage() {
   const router = useRouter();
   const { user, token, loading: authLoading } = useAuth();
@@ -43,6 +131,7 @@ export default function SavedPage() {
   const [savedDestinations, setSavedDestinations] = useState<Destination[]>([]);
   const [savedTours, setSavedTours] = useState<SavedTour[]>([]);
   const [selectedTour, setSelectedTour] = useState<SavedTour | null>(null);
+  const [modalTab, setModalTab] = useState<'map' | 'reviews'>('map');
   const [itineraries, setItineraries] = useState<Itinerary[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -139,6 +228,11 @@ export default function SavedPage() {
     } catch (error) {
       console.error('Error deleting itinerary:', error);
     }
+  };
+
+  const openTourDetail = (tour: SavedTour, tab: 'map' | 'reviews' = 'map') => {
+    setModalTab(tab);
+    setSelectedTour(tour);
   };
 
   const getStatusLabel = (status: string) => {
@@ -277,44 +371,12 @@ export default function SavedPage() {
                   ) : (
                     <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                       {savedTours.map((tour) => (
-                        <div key={tour.id} className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all group">
-                          <button onClick={() => setSelectedTour(tour)} className="block w-full text-left">
-                            <div className="relative h-48">
-                              <Image
-                                src={tour.coverImage || 'https://via.placeholder.com/400'}
-                                alt={tour.title}
-                                fill
-                                className="object-cover group-hover:scale-105 transition-transform"
-                              />
-                              <span className="absolute top-3 left-3 px-2 py-1 bg-white/90 backdrop-blur-sm rounded-full text-xs font-medium">
-                                ⭐ {tour.rating?.toFixed(1)}
-                              </span>
-                              <span className="absolute bottom-3 right-3 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/55 group-hover:bg-black/75 backdrop-blur text-white text-xs font-semibold transition-all">
-                                👁️ Xem chi tiết
-                              </span>
-                            </div>
-                          </button>
-                          <div className="p-4">
-                            <div className="flex items-start justify-between gap-2">
-                              <button onClick={() => setSelectedTour(tour)} className="flex-1 min-w-0 text-left">
-                                <h3 className="font-semibold text-gray-900 line-clamp-2 hover:text-sky-600 transition-colors">
-                                  <span className="mr-1">{tour.categoryIcon}</span>{tour.title}
-                                </h3>
-                                <p className="text-sm text-gray-500 mt-1">
-                                  📍 {tour.region} · ⏱️ {tour.duration}
-                                </p>
-                                <p className="text-orange-600 font-bold mt-1">{tour.priceLabel}</p>
-                              </button>
-                              <button
-                                onClick={() => removeSavedTour(tour.id)}
-                                className="p-2 text-red-500 hover:bg-red-50 rounded-full transition-all flex-shrink-0"
-                                title="Bỏ lưu"
-                              >
-                                ❤️
-                              </button>
-                            </div>
-                          </div>
-                        </div>
+                        <SavedTourCard
+                          key={tour.id}
+                          tour={tour}
+                          onOpen={(tab) => openTourDetail(tour, tab)}
+                          onRemove={() => removeSavedTour(tour.id)}
+                        />
                       ))}
                     </div>
                   )}
@@ -411,7 +473,11 @@ export default function SavedPage() {
       <Footer />
 
       {selectedTour && (
-        <TourDetailModal tour={selectedTour} onClose={() => setSelectedTour(null)} />
+        <TourDetailModal
+          tour={selectedTour}
+          initialTab={modalTab}
+          onClose={() => setSelectedTour(null)}
+        />
       )}
     </div>
   );

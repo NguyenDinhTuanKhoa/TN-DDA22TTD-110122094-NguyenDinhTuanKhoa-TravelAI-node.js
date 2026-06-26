@@ -13,6 +13,9 @@ export const NAV_STORAGE_KEY = 'travelai:nav';
 export interface NavPayload {
   title?: string;
   waypoints: NavWaypoint[];
+  // Khi dẫn đường xuất phát từ 1 tour đã lưu: mang theo id để trang /navigate
+  // đánh dấu tour 'completed' lúc tới đích & mở lời mời đánh giá.
+  tourId?: string;
 }
 
 // Lưu payload dẫn đường rồi để caller tự điều hướng sang /navigate.

@@ -3,8 +3,8 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { geocodeMany } from '../lib/geocode';
+import { fetchRoute } from '../lib/routing';
 import {
-  fetchRoute,
   haversineMeters,
   distanceToRoute,
   formatDistance,
@@ -31,6 +31,9 @@ export interface NavWaypoint {
 interface Props {
   waypoints: NavWaypoint[];
   title?: string;
+  // Gọi đúng MỘT lần khi người dùng tới đích cuối (qua GPS thật hoặc demo) — dùng
+  // để đánh dấu tour 'completed' & mở lời mời đánh giá. Tour itinerary bỏ trống.
+  onArrive?: () => void;
 }
 
 const categoryEmoji = { start: '🚩', end: '🏁', mid: '📍' } as const;
@@ -105,6 +108,8 @@ const ARROW: Record<string, string> = {
 function arrowFor(type: string, modifier?: string): string {
   if (type === 'arrive') return '🏁';
   if (type === 'depart') return '🚩';
+  if (type === 'waypoint') return '📍';
+  if (type === 'ferry' || type === 'ferry exit') return '⛴️';
   if (type === 'roundabout' || type === 'rotary') return '🔄';
   return (modifier && ARROW[modifier]) || '↑';
 }
@@ -128,7 +133,7 @@ type GpsStatus = 'idle' | 'requesting' | 'granted' | 'denied' | 'unsupported';
 // chỉ dẫn từng chặng + giọng nói TTS, tự tính lại tuyến khi đi lệch. Có bộ chọn
 // phương tiện (xe máy / ô tô / xe khách) và chế độ "Mô phỏng" để demo khi GPS
 // không di chuyển. Render client-only — nhúng qua dynamic import (ssr:false).
-export default function LiveNavigation({ waypoints, title }: Props) {
+export default function LiveNavigation({ waypoints, title, onArrive }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInst = useRef<L.Map | null>(null);
   const userMarker = useRef<L.Marker | null>(null);
@@ -156,6 +161,7 @@ export default function LiveNavigation({ waypoints, title }: Props) {
   const demoProgress = useRef(0);           // chỉ số geometry trong demo
   const spokenStep = useRef(-1);            // bước đã đọc TTS (chống lặp)
   const lastReroute = useRef(0);            // mốc thời gian re-route gần nhất
+  const arrivedFired = useRef(false);       // đã bắn onArrive chưa (chỉ 1 lần/phiên)
 
   const factor = VEHICLES.find((v) => v.id === vehicle)!.factor;
   const dur = useCallback((seconds: number) => seconds * factor, [factor]);
@@ -317,6 +323,13 @@ export default function LiveNavigation({ waypoints, title }: Props) {
     window.speechSynthesis.speak(u);
   }, [voiceOn]);
 
+  // Bắn onArrive đúng một lần khi tới đích (GPS thật hoặc demo chạy hết tuyến).
+  const fireArrive = useCallback(() => {
+    if (arrivedFired.current) return;
+    arrivedFired.current = true;
+    onArrive?.();
+  }, [onArrive]);
+
   useEffect(() => {
     if (!navigating || !userPos || !route || route.steps.length === 0) return;
     const steps = route.steps;
@@ -335,6 +348,9 @@ export default function LiveNavigation({ waypoints, title }: Props) {
       spokenStep.current = idx;
     }
 
+    // Tới bước cuối (đích) trong ngưỡng ~40m → coi như hoàn thành tour.
+    if (idx === steps.length - 1 && cur.type === 'arrive' && dist < 40) fireArrive();
+
     const dev = distanceToRoute(userPos, route.geometry);
     const drifting = dev > 60;
     setOffRoute(drifting);
@@ -343,7 +359,7 @@ export default function LiveNavigation({ waypoints, title }: Props) {
       speak('Đang tính lại tuyến đường');
       loadRoute(userPos);
     }
-  }, [userPos, navigating, route, stepIdx, speak, loadRoute]);
+  }, [userPos, navigating, route, stepIdx, speak, loadRoute, fireArrive]);
 
   // ── 8. Chế độ mô phỏng — di chuyển dọc tuyến để demo (GPS máy tính đứng yên) ──
   const stopDemo = useCallback(() => {
@@ -352,16 +368,21 @@ export default function LiveNavigation({ waypoints, title }: Props) {
 
   const startDemo = useCallback(() => {
     if (!route || route.geometry.length < 2) return;
+    const geo = route.geometry;
+    // Bước nhảy tỉ lệ độ dài tuyến: demo luôn xong trong ~vài phút dù tuyến dài
+    // (tránh đi từng điểm/700ms khiến tuyến HN–HCM chạy hàng chục phút, tưởng
+    // đứng hình). Tuyến ngắn vẫn nhảy 1 điểm như cũ.
+    const step = Math.max(1, Math.floor((geo.length - 1) / 240));
     demoProgress.current = 0;
     demoTimer.current = setInterval(() => {
-      const geo = route.geometry;
       const i = demoProgress.current;
-      if (i >= geo.length - 1) { stopDemo(); setNavigating(false); setDemo(false); return; }
+      if (i >= geo.length - 1) { fireArrive(); stopDemo(); setNavigating(false); setDemo(false); return; }
+      const next = Math.min(i + step, geo.length - 1);
       setUserPos(geo[i]);
-      setHeading(bearing(geo[i], geo[i + 1]));
-      demoProgress.current = i + 1;
+      setHeading(bearing(geo[i], geo[next]));
+      demoProgress.current = next;
     }, 700);
-  }, [route, stopDemo]);
+  }, [route, stopDemo, fireArrive]);
 
   // ── 9. Bắt đầu / dừng dẫn đường ──
   const toggleNav = (useDemo: boolean) => {
@@ -373,6 +394,7 @@ export default function LiveNavigation({ waypoints, title }: Props) {
     setNavigating(true);
     setStepIdx(0);
     spokenStep.current = -1;
+    arrivedFired.current = false;   // cho phép bắn onArrive lại ở phiên dẫn đường mới
     if (useDemo) {
       setDemo(true);
       startDemo();

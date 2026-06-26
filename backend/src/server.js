@@ -57,6 +57,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/destinations', require('./routes/destinations'));
 app.use('/api/itineraries', require('./routes/itineraries'));
+app.use('/api/tours', require('./routes/tours'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/ai', require('./routes/ai'));

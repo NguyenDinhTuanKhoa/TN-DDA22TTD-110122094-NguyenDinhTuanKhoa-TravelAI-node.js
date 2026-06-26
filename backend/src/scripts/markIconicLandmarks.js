@@ -78,7 +78,7 @@ const ICONIC_BY_PROVINCE = {
   'Long An': ['Tân Lập', 'Đồng Tháp Mười Long An'],
   'Tiền Giang': ['Cái Bè', 'Thới Sơn', 'Đồng Tâm', 'Gò Công'],
   'Bến Tre': ['Cồn Phụng', 'Cồn Quy', 'Vàm Hồ', 'Cái Mơn'],
-  'Trà Vinh': ['Ao Bà Om', 'Vàm Ray', 'Chùa Cò', 'Chùa Âng', 'Hang Dơi'],
+  'Trà Vinh': ['Ao Bà Om', 'Ba Động', 'Chùa Âng', 'Vàm Ray', 'Chùa Cò', 'Hang Dơi'],
   'Vĩnh Long': ['An Bình', 'Vinh Sang', 'Văn Thánh Miếu'],
   'Đồng Tháp': ['Sa Đéc', 'Tràm Chim', 'Gáo Giồng', 'Xẻo Quýt'],
   'An Giang': ['Núi Cấm', 'Núi Sam', 'Châu Đốc', 'Tà Pạ', 'Trà Sư', 'Bảy Núi'],

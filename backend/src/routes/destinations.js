@@ -49,8 +49,8 @@ router.get('/map', async (req, res) => {
 // Khớp không phân biệt hoa/dấu + lõi tên + lọc theo tỉnh ngữ cảnh (xem aiService).
 router.post('/from-text', async (req, res) => {
   try {
-    const { text } = req.body;
-    const data = await aiService.extractMentionedDestinations(text || '');
+    const { text, question } = req.body;
+    const data = await aiService.extractMentionedDestinations(text || '', 10, question || '');
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

@@ -4,6 +4,9 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { saveNavPayload } from '../lib/navHandoff';
+import { useAuth } from '../context/AuthContext';
+import { useTourStatus, setTourStatus } from '../lib/tourProgress';
+import TourReviewForm from './TourReviewForm';
 import {
   type Tour,
   isTourSaved,
@@ -68,17 +71,40 @@ export function Stars({ rating, size = 'sm' }: { rating: number; size?: 'sm' | '
 }
 
 // ── Tour Detail Modal ─────────────────────────────────────────────────────────
-export default function TourDetailModal({ tour, onClose }: { tour: Tour; onClose: () => void }) {
-  const [activeTab, setActiveTab] = useState<'map' | 'nav' | 'stops' | 'reviews'>('map');
+export default function TourDetailModal({
+  tour: initialTour,
+  onClose,
+  initialTab = 'map',
+}: {
+  tour: Tour;
+  onClose: () => void;
+  initialTab?: 'map' | 'nav' | 'stops' | 'reviews';
+}) {
+  // tour ở state cục bộ để cập nhật tại chỗ sau khi người dùng gửi đánh giá.
+  const [tour, setTour] = useState(initialTour);
+  const [activeTab, setActiveTab] = useState<'map' | 'nav' | 'stops' | 'reviews'>(initialTab);
   const saved = useTourSaved(tour.id);
+  const status = useTourStatus(tour.id);
+  const { user } = useAuth();
   const router = useRouter();
 
-  // Tour ≥ 2 trạm: bấm tab "Dẫn đường" mở thẳng trang dẫn đường riêng (/navigate);
-  // < 2 trạm: chuyển sang tab 'nav' để hiện cảnh báo.
+  // Đánh giá hiện có của chính user (để prefill form sửa).
+  const myReview = user ? tour.reviews.find((r) => r.userId === user._id) : undefined;
+
+  // Đánh dấu đã đi xong thủ công (dự phòng khi không qua màn dẫn đường).
+  const markCompleted = () => {
+    setTourStatus(tour.id, 'completed');
+    setActiveTab('reviews');
+  };
+
+  // Tour ≥ 2 trạm: bấm "Bắt đầu đi" → đánh dấu 'going', mang tourId qua trang
+  // dẫn đường riêng (/navigate). < 2 trạm: chuyển sang tab 'nav' để hiện cảnh báo.
   const startNavigation = () => {
     if (tour.stops.length < 2) { setActiveTab('nav'); return; }
+    setTourStatus(tour.id, 'going');
     saveNavPayload({
       title: tour.title,
+      tourId: tour.id,
       waypoints: tour.stops.map((s) => ({
         name: s.name,
         city: s.city,
@@ -269,7 +295,9 @@ export default function TourDetailModal({ tour, onClose }: { tour: Tour; onClose
                   </div>
                   <div className="flex-1 space-y-1.5">
                     {[5, 4, 3, 2, 1].map((star) => {
-                      const pct = star === 5 ? 72 : star === 4 ? 18 : star === 3 ? 7 : star === 2 ? 2 : 1;
+                      // Phân bố thật từ review (làm tròn rating về sao nguyên).
+                      const count = tour.reviews.filter((r) => Math.round(r.rating) === star).length;
+                      const pct = tour.reviews.length ? Math.round((count / tour.reviews.length) * 100) : 0;
                       return (
                         <div key={star} className="flex items-center gap-2">
                           <span className="text-xs text-gray-500 w-4">{star}★</span>
@@ -283,9 +311,22 @@ export default function TourDetailModal({ tour, onClose }: { tour: Tour; onClose
                   </div>
                 </div>
               </div>
+
+              {/* Form đánh giá — chỉ mở khoá sau khi hoàn thành tour */}
+              {status === 'completed' ? (
+                <TourReviewForm
+                  tourId={tour.id}
+                  existing={myReview ? { rating: myReview.rating, text: myReview.text } : undefined}
+                  onSubmitted={(updated) => setTour(updated)}
+                />
+              ) : (
+                <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-4 text-center text-sm text-gray-500">
+                  🚶 Hoàn thành tour để viết đánh giá của bạn.
+                </div>
+              )}
               {/* Reviews list */}
-              {tour.reviews.map((rv) => (
-                <div key={rv.name} className="bg-gray-50 border border-gray-100 rounded-2xl p-4">
+              {tour.reviews.map((rv, idx) => (
+                <div key={`${rv.name}-${idx}`} className="bg-gray-50 border border-gray-100 rounded-2xl p-4">
                   <div className="flex items-center gap-3 mb-2">
                     <div className="w-9 h-9 rounded-full bg-gradient-to-br from-sky-400 to-violet-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
                       {rv.avatar}
@@ -307,19 +348,47 @@ export default function TourDetailModal({ tour, onClose }: { tour: Tour; onClose
         </div>
 
         {/* ── Footer CTA ── */}
-        <div className="p-4 border-t border-gray-100 flex gap-3 flex-shrink-0">
-          <Link
-            href="/ai-chat"
-            className="flex-1 py-3.5 bg-gradient-to-r from-sky-500 to-violet-500 text-white rounded-2xl font-bold text-sm text-center hover:shadow-lg hover:shadow-sky-500/25 transition-all hover:scale-[1.01] active:scale-100"
-          >
-            🤖 Tạo hành trình tương tự với AI
-          </Link>
-          <button
-            onClick={onClose}
-            className="px-5 py-3.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-2xl font-semibold text-sm transition-all"
-          >
-            Đóng
-          </button>
+        <div className="p-4 border-t border-gray-100 flex flex-col gap-3 flex-shrink-0">
+          {/* Vòng đời tour: bắt đầu đi → đang đi → đã hoàn thành */}
+          {status === 'completed' ? (
+            <div className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-700 font-bold text-sm">
+              ✓ Đã hoàn thành tour này
+            </div>
+          ) : status === 'going' ? (
+            <div className="flex gap-2">
+              <span className="flex-1 flex items-center justify-center gap-1.5 py-3 rounded-2xl bg-sky-50 border border-sky-100 text-sky-700 font-bold text-sm">
+                🚶 Đang đi
+              </span>
+              <button
+                onClick={markCompleted}
+                className="flex-1 py-3 rounded-2xl bg-emerald-500 text-white font-bold text-sm hover:bg-emerald-600 transition-all active:scale-[0.99]"
+              >
+                Đã đi xong
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={startNavigation}
+              className="w-full py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-sky-500 text-white font-bold text-sm hover:shadow-lg hover:shadow-emerald-500/25 transition-all active:scale-[0.99]"
+            >
+              ▶ Bắt đầu đi
+            </button>
+          )}
+
+          <div className="flex gap-3">
+            <Link
+              href="/ai-chat"
+              className="flex-1 py-3.5 bg-gradient-to-r from-sky-500 to-violet-500 text-white rounded-2xl font-bold text-sm text-center hover:shadow-lg hover:shadow-sky-500/25 transition-all hover:scale-[1.01] active:scale-100"
+            >
+              🤖 Tạo hành trình tương tự với AI
+            </Link>
+            <button
+              onClick={onClose}
+              className="px-5 py-3.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-2xl font-semibold text-sm transition-all"
+            >
+              Đóng
+            </button>
+          </div>
         </div>
       </div>
     </div>

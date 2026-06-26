@@ -27,6 +27,10 @@ const NVIDIA_MODEL_FALLBACK = 'minimaxai/minimax-m2.7';
 // phần <think> lẫn câu trả lời; nếu thấp (4096) câu trả lời bị cắt giữa chừng hoặc rỗng.
 const MAX_TOKENS = 8192;
 
+// Tạo tour là one-shot sinh JSON dày (nhiều trạm + review) → cần dư token hơn chat
+// để tránh JSON bị cắt giữa chừng (parse lỗi). Cao hơn MAX_TOKENS vì không streaming.
+const MAX_TOKENS_TOUR = 16384;
+
 // Model reasoning trên NVIDIA: nếu không giới hạn reasoning_effort, phần <think> ngốn hết
 // max_tokens → câu trả lời rỗng/cụt. 'low' giảm mạnh reasoning, dồn token cho đáp án.
 // (Đã kiểm chứng: chat_template_kwargs.thinking/enable_thinking và /no_think đều bị NVIDIA bỏ qua.)
@@ -821,8 +825,12 @@ class AIService {
   // ── Trích "điểm đến được nhắc đến" trong 1 đoạn text (cho card AI chat) ──────
   // Khớp KHÔNG phân biệt hoa/dấu, cả tên đầy đủ lẫn lõi tên; lọc theo TỈNH NGỮ CẢNH
   // (có alias TP.HCM/Sài Gòn...) để KHÔNG hiện card sai tỉnh. Trả về dạng card frontend.
-  async extractMentionedDestinations(text, limit = 10) {
+  async extractMentionedDestinations(text, limit = 10, question = '') {
     if (!text) return [];
+    // Câu hỏi NGOÀI LỀ (kiến thức chung / hành chính, vd "Việt Nam có bao nhiêu tỉnh",
+    // "Trà Vinh còn không") → AI chỉ liệt kê tên tỉnh/thành chứ không gợi ý điểm đến.
+    // Bỏ qua trích card để tránh hiện "Điểm đến được nhắc đến" sai ngữ cảnh.
+    if (question && this.isGeneralKnowledgeQuery(question)) return [];
     const docs = await this.getDestinationsLite();
     const noTonesText = this.removeVietnameseTones(text);
 
@@ -1017,6 +1025,37 @@ class AIService {
     if (!text) return false;
     const noTones = this.removeVietnameseTones(text);
     return /an gi|an cai gi|cai gi an|an thu gi|mon gi|mon nao|mon an|mon khac|con mon|them mon|mon ngon|dac san|an mon|an them|quan an|an o dau|am thuc|do an|an vat|an uong|nau gi|co mon/.test(noTones);
+  }
+
+  // Câu hỏi KIẾN THỨC CHUNG / hành chính / địa lý (KHÔNG phải hỏi đi chơi) → không hiện
+  // card "điểm đến được nhắc đến". Vd: "Việt Nam có bao nhiêu tỉnh", "Trà Vinh còn không",
+  // "Hồ Chí Minh là ai". Nếu câu hỏi có Ý ĐỊNH DU LỊCH rõ ràng (đi đâu, chơi gì, ăn gì,
+  // lịch trình, gợi ý điểm đến...) thì BỎ QUA gate này để vẫn hiện card bình thường.
+  isGeneralKnowledgeQuery(text) {
+    if (!text) return false;
+    const noTones = this.removeVietnameseTones(text);
+
+    // 1) Ý định du lịch rõ ràng → luôn cho hiện card (ưu tiên cao nhất)
+    const travelIntent = [
+      'di dau', 'choi gi', 'choi o', 'co gi choi', 'co gi an', 'tham quan', 'dia diem',
+      'diem den', 'du lich', 'lich trinh', 'an gi', 'mon gi', 'mon nao', 'dac san',
+      'an o dau', 'quan an', 'am thuc', 'goi y', 'de xuat', 'nghi duong', 'khach san',
+      'homestay', 'resort', 'check in', 'song ao', 'canh dep', 'view dep', 'bai bien',
+      'bien dep', 'co bien', 'nen di', 'ghe tham', 'kham pha', 'phuot', 'vui choi',
+      'giai tri', 'cho nao dep', 'noi nao dep',
+    ];
+    if (travelIntent.some(k => noTones.includes(k))) return false;
+
+    // 2) Dấu hiệu kiến thức chung / hành chính / địa lý
+    const generalKnowledge = [
+      'bao nhieu tinh', 'bao nhieu thanh pho', 'bao nhieu don vi', 'bao nhieu huyen',
+      'don vi hanh chinh', 'cap tinh', 'sap nhap', 'con khong', 'con ton tai', 'doi ten',
+      'truc thuoc', 'thuoc tinh nao', 'thuoc mien nao', 'nam o dau', 'o mien nao',
+      'giap voi', 'tiep giap', 'la gi', 'la ai', 'ai la', 'dan so', 'dien tich',
+      'thu do', 'lich su', 'thanh lap', 'nam nao', 'the ky', 'ma vung', 'bien so',
+      'quoc khanh', 'dan toc', 'ngon ngu', 'tien te', 'gdp', 'co tu khi nao', 'tu nam',
+    ];
+    return generalKnowledge.some(k => noTones.includes(k));
   }
 
   // ── Build system prompt thông minh ─────────────────────────────────────────
@@ -1347,6 +1386,296 @@ Hãy đưa ra lịch trình chi tiết theo từng ngày, bao gồm:
   // ── Hỏi về điểm đến cụ thể ───────────────────────────────────────────────
   async askAboutDestination(destination, question) {
     return this.chatComplete([{ role: 'user', content: `Về điểm đến ${destination}: ${question}` }]);
+  }
+
+  // ── Tạo tour cộng đồng bằng AI (cho admin) ───────────────────────────────
+  // Trả về object tour DRAFT (chưa có ảnh, chưa lưu DB). Route admin sẽ fill ảnh
+  // qua Serper rồi cho admin review trước khi lưu.
+  async generateTour(answers = {}) {
+    const sys = `Bạn là chuyên gia thiết kế tour du lịch Việt Nam. Dựa trên yêu cầu của admin, hãy tạo MỘT tour hoàn chỉnh.
+
+QUY TẮC BẮT BUỘC:
+- ƯU TIÊN TUYỆT ĐỐI chọn trạm từ "DANH SÁCH ĐIỂM ĐẾN CÓ THẬT" cung cấp bên dưới, và PHẢI dùng ĐÚNG toạ độ [lat,lng] kèm theo mỗi điểm.
+- BẮT BUỘC đưa vào tour những điểm NỔI TIẾNG / BIỂU TƯỢNG nhất của khu vực nếu chúng có trong danh sách (vd các địa danh đứng đầu danh sách).
+- TUYỆT ĐỐI KHÔNG bịa toạ độ. Nếu một điểm KHÔNG có trong danh sách và bạn không chắc chắn toạ độ thật, ĐỪNG thêm điểm đó.
+- MỌI trạm phải nằm ĐÚNG khu vực/tỉnh được yêu cầu — KHÔNG đưa điểm ở tỉnh khác.
+- Số trạm hợp lý theo số ngày (khoảng 2-4 trạm/ngày).
+- Mọi nội dung văn bản bằng tiếng Việt.
+- Trả về DUY NHẤT một object JSON hợp lệ. KHÔNG kèm giải thích, KHÔNG markdown, KHÔNG dấu \`\`\`.
+
+ĐỊNH DẠNG JSON (đúng tên field, KHÔNG thêm field ảnh — hệ thống tự lấy ảnh):
+{
+  "title": "tiêu đề hấp dẫn",
+  "description": "mô tả 2-3 câu",
+  "duration": "vd '3 ngày 2 đêm'",
+  "days": number,
+  "category": "một trong: Biển, Núi, Di sản, Thành phố, Sinh thái, Đảo, Văn hóa",
+  "categoryIcon": "1 emoji",
+  "region": "vd 'Miền Trung', 'Tây Nam Bộ'",
+  "priceRange": "budget | mid-range | luxury",
+  "priceLabel": "vd '5.500.000 ₫'",
+  "rating": number (4.0-5.0),
+  "reviewCount": number (50-600),
+  "tags": ["4 thẻ ngắn"],
+  "highlights": ["4 điểm nhấn"],
+  "badge": "nhãn ngắn kèm emoji, vd '🔥 Phổ biến'",
+  "badgeColor": "class tailwind, vd 'bg-red-500'",
+  "author": "tên người tạo",
+  "authorAvatar": "2 chữ cái viết tắt",
+  "completedDate": "vd '04/2026'",
+  "stops": [
+    { "name": "...", "city": "...", "category": "beach|mountain|nature|heritage|city|island|countryside", "rating": number, "description": "mô tả ngắn", "coordinates": { "lat": number, "lng": number } }
+  ],
+  "reviews": [
+    { "name": "...", "avatar": "2 chữ", "date": "vd '03/2026'", "rating": number, "text": "review chân thực", "helpful": number }
+  ]
+}
+Tạo 2-3 review mẫu chân thực.`;
+
+    // ── Neo dữ liệu: nạp điểm đến CÓ THẬT từ DB (đồ án tập trung Trà Vinh + Bến Tre) ──
+    const Destination = require('../models/Destination');
+    const optimizeService = require('./optimizeService');
+
+    const norm = (s) => String(s || '').toLowerCase().trim();
+    // Model lưu toạ độ ở location.coordinates; fallback top-level coordinates nếu có.
+    const getCoords = (d) => {
+      const c = (d?.location?.coordinates && typeof d.location.coordinates.lat === 'number')
+        ? d.location.coordinates : d?.coordinates;
+      return (c && typeof c.lat === 'number' && typeof c.lng === 'number') ? { lat: c.lat, lng: c.lng } : null;
+    };
+
+    let allDests = [];
+    try {
+      allDests = await Destination.find({}, 'name location coordinates category rating description isIconic iconicRank').lean();
+    } catch (e) {
+      console.warn('[generateTour] load destinations lỗi:', e.message);
+    }
+
+    // Ứng viên theo khu vực (khớp city hoặc tên); rỗng → lấy điểm biểu tượng toàn bộ.
+    const area = norm(answers.destination);
+    const byRank = (a, b) =>
+      ((b.isIconic ? 1 : 0) - (a.isIconic ? 1 : 0)) ||
+      ((a.iconicRank || 999) - (b.iconicRank || 999)) ||
+      ((b.rating || 0) - (a.rating || 0));
+    let candidates = allDests;
+    let areaMatched = false;
+    if (area) {
+      const matched = allDests.filter((d) => {
+        const city = norm(d.location?.city);
+        return (city && (city.includes(area) || area.includes(city))) || norm(d.name).includes(area);
+      });
+      if (matched.length > 0) { candidates = matched; areaMatched = true; }
+    }
+
+    // Chỉ NEO danh sách điểm-có-thật khi: admin để AI tự chọn vùng (area rỗng) HOẶC
+    // khu vực yêu cầu KHỚP dữ liệu DB. Nếu admin nhập một vùng mà DB chưa có điểm nào
+    // (vd 'Đà Nẵng' khi DB tập trung Trà Vinh/Bến Tre) → KHÔNG gửi danh sách trái vùng
+    // (tránh nhiễm điểm tỉnh khác); để AI tự dựng từ kiến thức đúng khu vực — toạ độ
+    // thiếu sẽ được TourMap geocode runtime qua Nominatim.
+    const useCandidates = !area || areaMatched;
+    let candidateBlock = '';
+    if (useCandidates) {
+      candidates = [...candidates].sort(byRank).slice(0, 40);
+      candidateBlock = candidates.map((d) => {
+        const c = getCoords(d);
+        return `- ${d.name}${d.location?.city ? ` (${d.location.city})` : ''}${c ? ` [${c.lat},${c.lng}]` : ''}`;
+      }).join('\n');
+    }
+
+    const lines = [
+      `- Điểm đến / khu vực: ${answers.destination || 'gợi ý điểm phù hợp ở Việt Nam'}`,
+      `- Số ngày: ${answers.days || 3}`,
+      `- Ngân sách: ${answers.budget || 'trung bình'}`,
+      `- Sở thích / chủ đề: ${answers.interests || 'khám phá tổng hợp'}`,
+      `- Đối tượng đi: ${answers.audience || 'mọi đối tượng'}`,
+      `- Nhịp độ: ${answers.pace || 'cân bằng'}`,
+    ];
+    // Các tùy chọn mở rộng — chỉ thêm khi có ý nghĩa (bỏ qua "bất kỳ"/"tự do").
+    if (answers.season && answers.season !== 'bất kỳ') lines.push(`- Mùa/thời điểm đi: ${answers.season} (chọn điểm đến & hoạt động hợp mùa, tránh thời tiết xấu)`);
+    if (answers.transport && answers.transport !== 'tự do') lines.push(`- Phương tiện di chuyển: ${answers.transport} (sắp xếp lộ trình & khoảng cách phù hợp)`);
+    if (answers.accommodation && answers.accommodation !== 'tự do') lines.push(`- Loại lưu trú ưu tiên: ${answers.accommodation}`);
+    if (answers.fitness) lines.push(`- Mức thể lực: ${answers.fitness}`);
+    if (answers.density) lines.push(`- Mật độ điểm mỗi ngày: ${answers.density}`);
+    if (answers.notes && String(answers.notes).trim()) lines.push(`- Yêu cầu riêng (BẮT BUỘC tôn trọng): ${String(answers.notes).trim()}`);
+
+    let userMsg = `Yêu cầu tour:\n${lines.join('\n')}`;
+    if (candidateBlock) {
+      userMsg += `\n\nDANH SÁCH ĐIỂM ĐẾN CÓ THẬT (ưu tiên chọn, dùng ĐÚNG toạ độ [lat,lng]; BẮT BUỘC gồm các điểm nổi tiếng nhất đứng đầu danh sách):\n${candidateBlock}`;
+    }
+
+    const messages = [{ role: 'system', content: sys }, { role: 'user', content: userMsg }];
+    const params = { messages, stream: false, max_tokens: MAX_TOKENS_TOUR, temperature: 0.6, top_p: 0.9 };
+
+    // Gọi model theo chuỗi fallback giống chatComplete: nvidia primary → minimax → opencode.
+    const callRaw = async () => {
+      try {
+        const res = await nvidiaClient.chat.completions.create(withModel(params, NVIDIA_MODEL_PRIMARY));
+        return res.choices[0]?.message?.content || res.choices[0]?.message?.reasoning_content;
+      } catch (err) {
+        console.warn(`[generateTour] ${NVIDIA_MODEL_PRIMARY} failed (${err.message}), thử minimax`);
+        try {
+          const res = await nvidiaClient.chat.completions.create(withModel(params, NVIDIA_MODEL_FALLBACK));
+          return res.choices[0]?.message?.content;
+        } catch (err2) {
+          console.warn(`[generateTour] minimax failed (${err2.message}), thử opencode`);
+          const res = await opencodeClient.chat.completions.create(withModel(params, OPENCODE_MODEL));
+          return res.choices[0]?.message?.content;
+        }
+      }
+    };
+
+    // Model reasoning thỉnh thoảng trả JSON cụt (hết token) hoặc kèm text → parse lỗi.
+    // Thử tối đa 2 lần trước khi báo lỗi để admin không mất trắng lần gọi.
+    let draft, lastErr;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let raw;
+      try {
+        raw = await callRaw();
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[generateTour] gọi model lỗi (lần ${attempt}): ${err.message}`);
+        continue;
+      }
+      if (!raw) { lastErr = new Error('AI không trả về nội dung'); continue; }
+      try {
+        draft = this._parseTourJson(raw);
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[generateTour] parse JSON lỗi (lần ${attempt}): ${err.message}`);
+      }
+    }
+    if (!draft) throw lastErr || new Error('Không tạo được tour');
+
+    // ── Neo toạ độ từng trạm theo DB: đè toạ độ AI nếu trạm khớp tên một điểm thật ──
+    const matchDest = (stopName) => {
+      const n = norm(stopName);
+      if (!n) return null;
+      let best = allDests.find((d) => norm(d.name) === n);
+      if (best) return best;
+      best = allDests.find((d) => { const dn = norm(d.name); return dn.length >= 4 && (n.includes(dn) || dn.includes(n)); });
+      return best || null;
+    };
+    let groundedCount = 0;
+    for (const s of draft.stops) {
+      const m = matchDest(s.name);
+      if (!m) continue;
+      const c = getCoords(m);
+      if (c) { s.coordinates = c; groundedCount++; }
+      if (!s.city && m.location?.city) s.city = m.location.city;
+    }
+
+    // ── Ép đưa các điểm BIỂU TƯỢNG của khu vực vào tour (vd Ao Bà Om, Ba Động) ──
+    // AI hay bỏ sót điểm nổi tiếng → bổ sung tất định từ DB (isIconic) nếu còn thiếu.
+    if (areaMatched) {
+      const mapCat = (c) => {
+        if (['beach', 'mountain', 'city', 'countryside'].includes(c)) return c;
+        if (['historical', 'temple', 'culture', 'landmark'].includes(c)) return 'heritage';
+        return 'nature';
+      };
+      const hasStop = (name) => draft.stops.some((s) => {
+        const a = norm(s.name), b = norm(name);
+        return a === b || (b.length >= 4 && (a.includes(b) || b.includes(a)));
+      });
+      const mustHave = candidates
+        .filter((d) => d.isIconic && getCoords(d))
+        .sort((a, b) => (a.iconicRank || 999) - (b.iconicRank || 999))
+        .slice(0, 5);
+      for (const d of mustHave) {
+        if (hasStop(d.name)) continue;
+        draft.stops.push({
+          name: d.name,
+          city: d.location?.city || '',
+          category: mapCat(d.category),
+          rating: d.rating || 4.6,
+          description: d.description || `Địa danh nổi tiếng tại ${d.location?.city || 'khu vực'}.`,
+          coordinates: getCoords(d),
+        });
+        groundedCount++;
+      }
+    }
+
+    // Nếu AI không tạo được trạm nào (kể cả sau khi bổ sung điểm biểu tượng) → báo lỗi rõ
+    // để admin thử lại, thay vì trả về tour rỗng phải tự thêm tay.
+    if (!draft.stops.length) {
+      throw new Error('AI chưa tạo được trạm dừng nào — vui lòng thử lại hoặc nêu rõ khu vực hơn.');
+    }
+
+    // ── Tối ưu thứ tự trạm: "gần nhất kế tiếp" (Nearest Neighbor) như trang chat AI ──
+    try {
+      const hasCoords = (s) => s.coordinates && typeof s.coordinates.lat === 'number';
+      const withCoords = draft.stops.filter(hasCoords);
+      if (withCoords.length >= 2) {
+        const locations = withCoords.map((s) => ({ lat: s.coordinates.lat, lng: s.coordinates.lng, _stop: s }));
+        const result = await optimizeService.optimizeRoute(locations, { lat: locations[0].lat, lng: locations[0].lng }, 'auto');
+        const ordered = result.optimizedLocations.map((l) => l._stop);
+        draft.stops = [...ordered, ...draft.stops.filter((s) => !hasCoords(s))];
+        console.log(`[generateTour] ✓ neo ${groundedCount}/${draft.stops.length} trạm theo DB | tối ưu ${result.stats.locationCount} trạm (${result.method}, tiết kiệm ${result.stats.improvementPercent}%)`);
+      }
+    } catch (optErr) {
+      console.warn('[generateTour] optimize lỗi:', optErr.message);
+    }
+
+    return draft;
+  }
+
+  // Bóc + parse JSON tour từ phản hồi model (strip <think>, bỏ fence, lấy {...}).
+  _parseTourJson(text) {
+    let s = String(text).replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fence) s = fence[1].trim();
+    const first = s.indexOf('{');
+    const last = s.lastIndexOf('}');
+    if (first !== -1 && last !== -1) s = s.slice(first, last + 1);
+
+    let obj;
+    try {
+      obj = JSON.parse(s);
+    } catch (e) {
+      throw new Error('AI trả về JSON không hợp lệ: ' + e.message);
+    }
+
+    // Normalize — đảm bảo kiểu dữ liệu để khớp model Tour.
+    const num = (v, d = 0) => (typeof v === 'number' && !isNaN(v) ? v : (parseFloat(v) || d));
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    return {
+      title: obj.title || 'Tour mới',
+      description: obj.description || '',
+      duration: obj.duration || `${num(obj.days, 1)} ngày`,
+      days: num(obj.days, 1),
+      category: obj.category || 'Khám phá',
+      categoryIcon: obj.categoryIcon || '📍',
+      region: obj.region || '',
+      priceRange: ['budget', 'mid-range', 'luxury'].includes(obj.priceRange) ? obj.priceRange : 'mid-range',
+      priceLabel: obj.priceLabel || 'Liên hệ',
+      rating: num(obj.rating, 4.5),
+      reviewCount: num(obj.reviewCount, 0),
+      tags: arr(obj.tags).map(String),
+      highlights: arr(obj.highlights).map(String),
+      badge: obj.badge || '✨ Mới',
+      badgeColor: obj.badgeColor || 'bg-sky-500',
+      author: obj.author || 'TravelAI',
+      authorAvatar: obj.authorAvatar || 'AI',
+      completedDate: obj.completedDate || '',
+      stops: arr(obj.stops).map((s) => ({
+        name: s.name || '',
+        city: s.city || '',
+        category: s.category || 'nature',
+        rating: num(s.rating, 4.5),
+        description: s.description || '',
+        coordinates: (s.coordinates && typeof s.coordinates.lat === 'number')
+          ? { lat: num(s.coordinates.lat), lng: num(s.coordinates.lng) }
+          : undefined,
+      })),
+      reviews: arr(obj.reviews).map((r) => ({
+        name: r.name || 'Khách',
+        avatar: r.avatar || (r.name ? r.name.slice(0, 2).toUpperCase() : 'KH'),
+        date: r.date || '',
+        rating: num(r.rating, 5),
+        text: r.text || '',
+        helpful: num(r.helpful, 0),
+      })),
+    };
   }
 }
 

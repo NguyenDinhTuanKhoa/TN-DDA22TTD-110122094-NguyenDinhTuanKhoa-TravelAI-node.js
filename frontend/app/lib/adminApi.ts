@@ -93,6 +93,20 @@ export const adminApi = {
   bulkDeleteItineraries: (ids: string[]) =>
     fetchAdmin('/itineraries/bulk', { method: 'DELETE', body: JSON.stringify({ ids }) }),
 
+  // ===== Tours (tour cộng đồng /my-tours) =====
+  getTours: (params: { page?: number; search?: string; category?: string; priceRange?: string } = {}) =>
+    fetchAdmin(`/tours${qs(params)}`),
+  createTour: (data: object) =>
+    fetchAdmin('/tours', { method: 'POST', body: JSON.stringify(data) }),
+  updateTour: (id: string, data: object) =>
+    fetchAdmin(`/tours/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteTour: (id: string) =>
+    fetchAdmin(`/tours/${id}`, { method: 'DELETE' }),
+  bulkDeleteTours: (ids: string[]) =>
+    fetchAdmin('/tours/bulk', { method: 'DELETE', body: JSON.stringify({ ids }) }),
+  generateTour: (answers: object) =>
+    fetchAdmin('/tours/generate', { method: 'POST', body: JSON.stringify(answers) }),
+
   // ===== Chats =====
   getChats: (params: { page?: number; search?: string; userId?: string } = {}) =>
     fetchAdmin(`/chats${qs(params)}`),

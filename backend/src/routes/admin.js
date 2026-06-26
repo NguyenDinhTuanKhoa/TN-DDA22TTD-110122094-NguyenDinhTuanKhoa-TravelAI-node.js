@@ -4,8 +4,11 @@ const User = require('../models/User');
 const Destination = require('../models/Destination');
 const Review = require('../models/Review');
 const Itinerary = require('../models/Itinerary');
+const Tour = require('../models/Tour');
 const ChatHistory = require('../models/ChatHistory');
 const AdminActivityLog = require('../models/AdminActivityLog');
+const aiService = require('../services/aiService');
+const { fillTourImages } = require('../utils/tourImages');
 const { protect, admin } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLogger');
 const router = express.Router();
@@ -509,6 +512,111 @@ router.delete('/itineraries/:id', async (req, res) => {
     res.json({ message: 'Itinerary deleted' });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// ============================================================
+// TOURS MANAGEMENT (tour cộng đồng /my-tours)
+// ============================================================
+router.get('/tours', async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search, category, priceRange } = req.query;
+    const query = {};
+    if (search) query.title = { $regex: search, $options: 'i' };
+    if (category && category !== 'all') query.category = category;
+    if (priceRange && priceRange !== 'all') query.priceRange = priceRange;
+
+    const tours = await Tour.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Tour.countDocuments(query);
+    res.json({ tours, total, totalPages: Math.ceil(total / limit) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+router.post('/tours', async (req, res) => {
+  try {
+    const tour = await Tour.create({ ...req.body, createdBy: req.user._id, source: req.body.source || 'manual' });
+    logActivity(req, {
+      action: 'create',
+      targetModel: 'Tour',
+      targetId: tour._id,
+      targetLabel: tour.title,
+    });
+    res.status(201).json(tour);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+router.put('/tours/:id', async (req, res) => {
+  try {
+    // Không cho client ghi đè các field hệ thống.
+    const { _id, slug, viewCount, createdBy, createdAt, ...update } = req.body;
+    const tour = await Tour.findByIdAndUpdate(req.params.id, update, { new: true });
+    if (!tour) return res.status(404).json({ message: 'Not found' });
+    logActivity(req, {
+      action: 'update',
+      targetModel: 'Tour',
+      targetId: tour._id,
+      targetLabel: tour.title,
+    });
+    res.json(tour);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+router.delete('/tours/bulk', async (req, res) => {
+  try {
+    const ids = toValidIds(req.body?.ids);
+    if (ids.length === 0) return res.status(400).json({ message: 'Không có id hợp lệ' });
+    const result = await Tour.deleteMany({ _id: { $in: ids } });
+    logActivity(req, {
+      action: 'bulk_delete',
+      targetModel: 'Tour',
+      meta: { count: result.deletedCount, ids },
+    });
+    res.json({ deletedCount: result.deletedCount });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+router.delete('/tours/:id', async (req, res) => {
+  try {
+    const tour = await Tour.findByIdAndDelete(req.params.id);
+    if (!tour) return res.status(404).json({ message: 'Not found' });
+    logActivity(req, {
+      action: 'delete',
+      targetModel: 'Tour',
+      targetId: tour._id,
+      targetLabel: tour.title,
+    });
+    res.json({ message: 'Tour deleted' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// AI tạo tour DRAFT (chưa lưu): sinh cấu trúc + fill ảnh thật qua Serper.
+// Admin review/chỉnh rồi POST /tours để lưu. Thao tác có thể mất vài giây.
+router.post('/tours/generate', async (req, res) => {
+  try {
+    const draft = await aiService.generateTour(req.body || {});
+    try {
+      await fillTourImages(draft);
+    } catch (imgErr) {
+      console.warn('[tours/generate] fillTourImages lỗi:', imgErr.message);
+    }
+    res.json({ success: true, data: { ...draft, source: 'ai' } });
+  } catch (error) {
+    console.error('[tours/generate] lỗi:', error.message);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 

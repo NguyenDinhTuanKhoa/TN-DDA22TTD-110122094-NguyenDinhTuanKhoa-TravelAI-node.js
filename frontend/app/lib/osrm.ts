@@ -25,6 +25,12 @@ export interface Route {
 
 const OSRM_BASE = 'https://router.project-osrm.org/route/v1/driving';
 
+// Timeout cứng cho mọi lời gọi routing — server demo công cộng có thể "treo"
+// (TCP nối nhưng không trả lời) mà fetch của trình duyệt KHÔNG tự timeout, sẽ
+// làm cả UI dẫn đường đơ vĩnh viễn. Hết hạn → abort → trả null → caller
+// fallback sang nhà cung cấp khác hoặc báo lỗi.
+export const ROUTE_TIMEOUT_MS = 12000;
+
 // ── Dịch maneuver của OSRM sang câu tiếng Việt ──────────────────────────────
 // Tham chiếu: https://github.com/Project-OSRM/osrm-text-instructions
 const MODIFIER_VI: Record<string, string> = {
@@ -38,7 +44,7 @@ const MODIFIER_VI: Record<string, string> = {
   'uturn': 'quay đầu',
 };
 
-function maneuverToVi(
+export function maneuverToVi(
   type: string,
   modifier: string | undefined,
   roadName: string,
@@ -72,6 +78,12 @@ function maneuverToVi(
         : `Đi theo vòng xuyến${road}`;
     case 'continue':
       return dir && modifier !== 'straight' ? `${cap(dir)}${road}` : `Tiếp tục đi thẳng${road}`;
+    case 'ferry':
+      return roadName ? `Lên phà ${roadName}` : 'Lên phà';
+    case 'ferry exit':
+      return 'Rời phà, đi tiếp';
+    case 'waypoint':
+      return 'Đã tới trạm dừng';
     default:
       return dir ? `${cap(dir)}${road}` : `Tiếp tục${road}`;
   }
@@ -83,7 +95,9 @@ function cap(s: string): string {
 
 // ── Gọi OSRM để lấy tuyến qua danh sách điểm (đã có toạ độ) ───────────────────
 // Trả về null nếu lỗi mạng / không có tuyến → caller tự fallback.
-export async function fetchRoute(points: LatLng[]): Promise<Route | null> {
+// CẢNH BÁO: OSRM demo không biết biên giới quốc gia → tuyến có thể cắt qua
+// Lào/Campuchia. Dùng làm fallback cho ORS (xem routing.ts).
+export async function fetchRouteOSRM(points: LatLng[]): Promise<Route | null> {
   if (points.length < 2) return null;
 
   // OSRM nhận lng,lat (ngược với thường lệ).
@@ -92,8 +106,10 @@ export async function fetchRoute(points: LatLng[]): Promise<Route | null> {
     `${OSRM_BASE}/${coords}` +
     `?overview=full&geometries=geojson&steps=true&annotations=false`;
 
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ROUTE_TIMEOUT_MS);
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: ctrl.signal });
     if (!res.ok) return null;
     const data = await res.json();
     if (data.code !== 'Ok' || !data.routes?.[0]) return null;
@@ -105,18 +121,23 @@ export async function fetchRoute(points: LatLng[]): Promise<Route | null> {
       ([lng, lat]: [number, number]) => ({ lat, lng })
     );
 
-    // Gom tất cả các step từ mọi leg thành một danh sách phẳng.
+    // Gom step từ mọi leg thành danh sách phẳng. OSRM kết thúc MỖI leg bằng
+    // 'arrive'; với tuyến nhiều trạm, các 'arrive' ở leg chưa-phải-cuối được hạ
+    // xuống 'waypoint' để không phát "Đã đến nơi" giả tại trạm trung gian.
     const steps: RouteStep[] = [];
-    for (const leg of route.legs ?? []) {
-      for (const s of leg.steps ?? []) {
+    const legs = route.legs ?? [];
+    for (let li = 0; li < legs.length; li++) {
+      const isLastLeg = li === legs.length - 1;
+      for (const s of legs[li].steps ?? []) {
         const m = s.maneuver ?? {};
         const [mLng, mLat] = m.location ?? [0, 0];
+        const type = (m.type === 'arrive' && !isLastLeg) ? 'waypoint' : (m.type ?? '');
         steps.push({
-          text: maneuverToVi(m.type, m.modifier, s.name || '', m.exit),
+          text: maneuverToVi(type, m.modifier, s.name || '', m.exit),
           name: s.name || '',
           distance: s.distance ?? 0,
           duration: s.duration ?? 0,
-          type: m.type ?? '',
+          type,
           modifier: m.modifier,
           location: { lat: mLat, lng: mLng },
         });
@@ -131,6 +152,8 @@ export async function fetchRoute(points: LatLng[]): Promise<Route | null> {
     };
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
